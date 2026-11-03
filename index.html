@@ -3239,6 +3239,86 @@ function gxCandKey(){var h=he.createElement;return h("div",{className:"mt-3 flex
 h("span",{className:"flex items-center gap-1.5"},h("span",{className:"inline-block h-2 w-4 rounded-sm",style:{opacity:0.45,background:"#8b97ad"}}),"Reported (agent result sheets)"),
 h("span",{className:"flex items-center gap-1.5"},h("span",{className:"inline-block h-2 w-4 rounded-sm",style:{background:"#8b97ad"}}),"Verified against independent sources"))}
 
+/* ===== What-if scenario builder: analyst-controlled additions, subtractions and allocations ===== */
+var GX_WI_KEY="bec.geo.whatif",GX_WI=gxLoad(GX_WI_KEY,{all:{},lgas:{}}),GX_WI_L=new Set();
+function gxWiSet(fn){GX_WI=fn(JSON.parse(JSON.stringify(GX_WI)));gxSave(GX_WI_KEY,GX_WI);GX_WI_L.forEach(function(f){f()})}
+function useGxWi(){var _s=he.useState(0),bump=_s[1];he.useEffect(function(){var f=function(){bump(function(x){return x+1})};GX_WI_L.add(f);return function(){GX_WI_L.delete(f)}},[]);return GX_WI}
+function gxNorm(sh){var s=0,o={};for(var k in sh)s+=Math.max(0,sh[k]);for(var k2 in sh)o[k2]=s?Math.max(0,sh[k2])/s:0;return o}
+/* per-LGA baseline: reported votes, outstanding registered voters, observed turnout and shares */
+function gxWiBase(t){var k=t.version+"|"+(t.user&&t.user.id);if(GX_C.wk===k)return GX_C.wv;var codes=es.map(function(p){return p.code}),st={rep:{},cast:0,reg:0},out={};codes.forEach(function(c){st.rep[c]=0});
+t.w.lgas.forEach(function(l){var pus=gxLgaPus(t,l.code);if(!pus.length)return;var o={code:l.code,name:l.name,rep:{},cast:0,regRep:0,regOut:0,nRep:0,nOut:0};codes.forEach(function(c){o.rep[c]=0});
+pus.forEach(function(p){var r=t.resultByPu.get(p.id),s=r&&r.status!=="none"?r.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean):[];
+if(s.length){var pr=s.find(function(x){return x.source==="agent"})||s[0];codes.forEach(function(c){o.rep[c]+=pr.votes[c]||0});o.cast+=pr.totalValid||0;o.regRep+=p.registered;o.nRep++}else{o.regOut+=p.registered;o.nOut++}});
+codes.forEach(function(c){st.rep[c]+=o.rep[c]});st.cast+=o.cast;st.reg+=o.regRep;out[l.code]=o});
+var stSh=gxNorm(st.rep),stTurn=st.reg?st.cast/st.reg:0.35;
+Object.keys(out).forEach(function(k2){var o=out[k2],tot=0;codes.forEach(function(c){tot+=o.rep[c]});o.defSh=tot>200?gxNorm(o.rep):stSh;o.defTurn=o.regRep>2000?o.cast/o.regRep:stTurn});
+var v={lgas:out,codes:codes,stSh:stSh,stTurn:stTurn};GX_C.wk=k;GX_C.wv=v;return v}
+function gxWiCalc(t,wi,only){var B=gxWiBase(t),codes=B.codes,res={rep:{},est:{},adj:{},tot:{},base:{},pending:0,regOut:0,lgas:{}};codes.forEach(function(c){res.rep[c]=0;res.est[c]=0;res.adj[c]=0;res.tot[c]=0;res.base[c]=0});
+Object.keys(B.lgas).forEach(function(k){if(only&&only!==k)return;var o=B.lgas[k],ov=wi.lgas[k]||{},g=wi.all||{};
+var turn=ov.turn!=null?ov.turn:g.turn!=null?g.turn:o.defTurn,sh=ov.shares?gxNorm(ov.shares):g.shares?gxNorm(g.shares):o.defSh,votes=o.regOut*turn,L={turn:turn,sh:sh,votes:votes,edited:!!(ov.turn!=null||ov.shares||ov.adj),est:{}};
+codes.forEach(function(c){var e=votes*(sh[c]||0),a=(ov.adj&&ov.adj[c])||0;L.est[c]=e;res.rep[c]+=o.rep[c];res.est[c]+=e;res.adj[c]+=a;res.tot[c]+=Math.max(0,o.rep[c]+e+a);res.base[c]+=o.rep[c]+o.regOut*o.defTurn*(o.defSh[c]||0)});
+res.pending+=votes;res.regOut+=o.regOut;res.lgas[k]=L});return res}
+function gxStep(label,val,onMinus,onPlus,big,disabled,name){name=name||(typeof label==="string"?label:"value");var h=he.createElement,bs={width:big?40:30,height:big?36:28,borderRadius:6,border:"1px solid #26345a",background:"#0f1729",color:"#e6ebf5",fontSize:big?20:16,lineHeight:1,cursor:"pointer"};
+return h("div",{className:"flex items-center justify-between gap-2",style:{fontSize:big?15:12}},h("span",{className:"min-w-0 truncate text-fog-200"},label),
+h("div",{className:"flex shrink-0 items-center gap-1.5"},h("button",{type:"button",style:bs,disabled:disabled,onClick:onMinus,"aria-label":"Decrease "+name},"−"),
+h("span",{className:"font-mono text-fog-50",style:{minWidth:big?86:70,textAlign:"center"}},val),h("button",{type:"button",style:bs,disabled:disabled,onClick:onPlus,"aria-label":"Increase "+name},"+")))}
+function GxWhatIf(p){var h=he.createElement,_d=D(),t=_d.s,wi=useGxWi(),B=gxWiBase(t),P=gxParties(),big=!!p.big;
+var _l=he.useState(p.lga||""),sel=_l[0],setSel=_l[1];he.useEffect(function(){if(p.lga!==void 0)setSel(p.lga||"")},[p.lga]);
+var _a=he.useState(1000),step=_a[0],setStep=_a[1];
+var key=sel&&B.lgas[sel]?sel:"",scope=key?(wi.lgas[key]||{}):(wi.all||{}),info=key?B.lgas[key]:null;
+var R=gxWiCalc(t,wi),Rl=key?gxWiCalc(t,wi,key):null,cur=key?Rl.lgas[key]:null;
+var curTurn=key?cur.turn:(scope.turn!=null?scope.turn:B.stTurn),curSh=key?cur.sh:(scope.shares?gxNorm(scope.shares):B.stSh);
+var put=function(patch){gxWiSet(function(w){if(key){w.lgas[key]=Object.assign({},w.lgas[key]||{},patch)}else{w.all=Object.assign({},w.all||{},patch)}return w})};
+var setTurn=function(v){put({turn:Math.max(0,Math.min(1,Math.round(v*1000)/1000))})};
+var setShare=function(c,d){var sh=Object.assign({},curSh),old=sh[c]||0,nv=Math.max(0,Math.min(1,old+d)),rest=1-old,o={};
+P.forEach(function(x){o[x.code]=x.code===c?nv:rest>0?(sh[x.code]||0)*(1-nv)/rest:(1-nv)/(P.length-1)});put({shares:o})};
+var setAdj=function(c,d){if(!key)return;var a=Object.assign({},scope.adj||{});a[c]=(a[c]||0)+d;var mn=-((info&&info.rep[c])||0)-((cur&&cur.est[c])||0);if(a[c]<mn)a[c]=Math.round(mn);put({adj:a})};
+var clear=function(){gxWiSet(function(w){if(key)delete w.lgas[key];else w.all={};return w})};
+var clearAll=function(){gxWiSet(function(){return{all:{},lgas:{}}})};
+var edited=Object.keys(wi.lgas).filter(function(k){return B.lgas[k]&&(wi.lgas[k].turn!=null||wi.lgas[k].shares||wi.lgas[k].adj)});
+var tot=0;P.forEach(function(x){tot+=R.tot[x.code]});var mx=Math.max.apply(null,P.map(function(x){return R.tot[x.code]}).concat([1]));
+var rank=P.slice().sort(function(a,b){return R.tot[b.code]-R.tot[a.code]}),gap=R.tot[rank[0].code]-R.tot[rank[1].code];
+var lab={fontSize:big?11:10.5,letterSpacing:".12em",textTransform:"uppercase",color:"#7a869e",margin:big?"16px 0 8px":"12px 0 6px"};
+var lgaSel=gxSel(key,function(v){setSel(v||"");p.onLga&&p.onLga(v||null)},[["","All LGAs (statewide default)"]].concat(Object.keys(B.lgas).map(function(k){return[k,B.lgas[k].name+(wi.lgas[k]?" ✎":"")]})),"LGA to adjust","w-full");
+return h("div",{className:"flex flex-col"},
+h("div",{className:"flex items-center justify-between gap-2"},h("div",{style:{fontSize:big?11:10.5,letterSpacing:".12em",textTransform:"uppercase",color:"#d4bd78"}},"What-if · analyst scenario"),
+h("button",{type:"button",onClick:clearAll,className:"text-[11px] text-fog-400 hover:text-fog-100"},"Reset all")),
+h("p",{className:"mt-1 text-fog-400",style:{fontSize:big?12.5:11.5,lineHeight:1.45}},"Adjust the assumptions for polling units that haven't reported yet. Reported votes stay fixed. This is your scenario, not a projection or a result."),
+h("div",{style:lab},"Area"),lgaSel,
+info&&h("div",{className:"mt-1.5 text-fog-500",style:{fontSize:big?12:11}},gxF(info.nRep)+" PUs reported · "+gxF(info.nOut)+" outstanding · "+gxF(info.regOut)+" registered voters outstanding"),
+h("div",{style:lab},"Scenario totals, statewide"),
+h("ul",{className:"flex flex-col",style:{gap:big?12:9}},P.map(function(x){var tv=R.tot[x.code],d=tv-R.base[x.code];return h("li",{key:x.code},
+h("div",{className:"flex items-baseline justify-between gap-2",style:{fontSize:big?15:12}},h("span",{className:"min-w-0 truncate text-fog-100"},x.cand),
+h("span",{className:"font-mono text-fog-50"},gxF(tv)," ",h("span",{className:"text-fog-500"},gxP(ne(tv,tot))))),
+h("div",{className:"relative mt-1 rounded-sm bg-line",style:{height:big?10:7}},h("div",{className:"absolute inset-y-0 rounded-sm",style:{left:0,width:tv/mx*100+"%",background:x.color,opacity:0.5}}),
+h("div",{className:"absolute inset-y-0 rounded-sm",style:{left:0,width:R.rep[x.code]/mx*100+"%",background:x.color}})),
+h("div",{className:"mt-0.5 flex justify-between text-fog-500",style:{fontSize:big?11.5:10.5}},h("span",null,"Reported "+gxF(R.rep[x.code])+" + estimated "+gxF(R.est[x.code])+(R.adj[x.code]?" "+(R.adj[x.code]>0?"+ ":"− ")+gxF(Math.abs(R.adj[x.code])):"")),
+h("span",{className:d>0?"text-ok":d<0?"text-bad":""},(d>=0?"+":"−")+gxF(Math.abs(d))+" vs default")))})),
+h("div",{className:"mt-3 rounded-md border border-line px-3 py-2 text-fog-200",style:{fontSize:big?13:11.5}},"Gap between the top two in this scenario: ",h("b",{className:"font-mono"},gxF(gap))," votes ("+rank[0].cand+" over "+rank[1].cand+"). Outstanding votes allocated: "+gxF(R.pending)+"."),
+h("div",{style:lab},"Turnout in outstanding PUs"),
+gxStep(key?"Turnout, "+info.name:"Turnout, all LGAs",gxP(curTurn*100),function(){setTurn(curTurn-0.01)},function(){setTurn(curTurn+0.01)},big),
+h("div",{className:"mt-1 text-fog-500",style:{fontSize:big?11.5:10.5}},"Observed so far: "+gxP((key?info.defTurn:B.stTurn)*100)+" · ±1 point per tap"),
+h("div",{style:lab},"Share of outstanding votes"),
+h("div",{className:"flex flex-col",style:{gap:big?8:6}},P.map(function(x){return h("div",{key:x.code},gxStep(h("span",null,h("span",{className:"inline-block h-2 w-2 rounded-full",style:{background:x.color,marginRight:6}}),x.cand),gxP((curSh[x.code]||0)*100),function(){setShare(x.code,-0.01)},function(){setShare(x.code,0.01)},big,false,x.cand+" share"))})),
+h("div",{className:"mt-1 text-fog-500",style:{fontSize:big?11.5:10.5}},"±1 point per tap; the other candidates rebalance so shares total 100%."),
+key&&h("div",null,h("div",{style:lab},"Add or subtract votes in "+info.name),
+h("div",{className:"mb-2 flex flex-wrap gap-1.5"},[100,1000,5000].map(function(s){var on=step===s;return h("button",{key:s,type:"button",onClick:function(){setStep(s)},"aria-pressed":on,className:N("rounded-full border px-2.5 py-0.5 text-[11px] transition",on?"border-signal-500 bg-signal-500/15 text-signal-200":"border-line text-fog-400 hover:text-fog-200")},"Step "+gxF(s))})),
+h("div",{className:"flex flex-col",style:{gap:big?8:6}},P.map(function(x){var a=(scope.adj&&scope.adj[x.code])||0;return h("div",{key:x.code},gxStep(x.cand,(a>0?"+":"")+gxF(a),function(){setAdj(x.code,-step)},function(){setAdj(x.code,step)},big,false,x.cand+" votes"))})),
+h("div",{className:"mt-1 text-fog-500",style:{fontSize:big?11.5:10.5}},"Use for late sheets, excluded disputed sheets or other known changes. Totals never go below zero.")),
+h("div",{className:"mt-2"},h("button",{type:"button",onClick:clear,className:"text-[11px] text-signal-300 hover:text-signal-100"},key?"Clear changes for "+info.name:"Clear statewide defaults")),
+edited.length>0&&h("div",null,h("div",{style:lab},"LGAs you've adjusted"),h("div",{className:"flex flex-wrap gap-1.5"},edited.map(function(k){return h("span",{key:k,className:"inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-[11px] text-fog-200"},
+h("button",{type:"button",onClick:function(){setSel(k);p.onLga&&p.onLga(k)}},B.lgas[k].name),h("button",{type:"button","aria-label":"Clear "+B.lgas[k].name,className:"text-fog-500 hover:text-bad",onClick:function(){gxWiSet(function(w){delete w.lgas[k];return w})}},"×"))}))),
+h("div",{className:"mt-3 flex flex-wrap gap-2"},gxBtn("Export scenario",function(){gxCsv("bec-what-if-scenario.csv",["LGA","Turnout assumed","Outstanding votes"].concat(P.map(function(x){return x.cand+" est."})).concat(P.map(function(x){return x.cand+" adj."})),
+Object.keys(R.lgas).map(function(k){var L=R.lgas[k],ov=wi.lgas[k]||{};return[B.lgas[k].name,(L.turn*100).toFixed(1)+"%",Math.round(L.votes)].concat(P.map(function(x){return Math.round(L.est[x.code])})).concat(P.map(function(x){return(ov.adj&&ov.adj[x.code])||0}))}))},null,gxIcon("Download"))),
+h("p",{className:"mt-3 text-fog-500",style:{fontSize:big?11:10.5,lineHeight:1.45}},"Analyst scenario built from your assumptions, saved in this browser. It is not a projection, not a forecast and not a result. Only INEC declares results."))}
+function gxWiMapVals(t,wi){var B=gxWiBase(t),R=gxWiCalc(t,wi),o={};Object.keys(B.lgas).forEach(function(k){var b=B.lgas[k],L=R.lgas[k],pct=ne(b.nOut,b.nRep+b.nOut),i=Math.min(4,Math.floor(pct/20));
+o[k]={value:pct,color:L.edited?"#6a5bd6":GX_SEQ[4-i],tip:[["Outstanding PUs",gxF(b.nOut)+" ("+gxP(pct,0)+")"],["Turnout assumed",gxP(L.turn*100)],["Votes to allocate",gxF(L.votes)],["Your changes",L.edited?"Yes":"None"]]}});return o}
+function gxWiLegend(){return gxLegendEl("Outstanding PUs",[["< 20%",GX_SEQ[4]],["20–40%",GX_SEQ[3]],["40–60%",GX_SEQ[2]],["60–80%",GX_SEQ[1]],["≥ 80%",GX_SEQ[0]],["You've adjusted",'#6a5bd6']],"Select an LGA to adjust it.")}
+function GxWhatIfSection(){var h=he.createElement,_d=D(),t=_d.s,wi=useGxWi(),_l=he.useState(null),lga=_l[0],setLga=_l[1];
+return h("div",{className:"grid gap-4 xl:grid-cols-[1fr_380px]"},h(T,{title:"What-if scenario builder",subtitle:"Select an LGA on the map, then use the controls on the right to add, subtract and allocate votes",bodyClass:"p-0",className:"overflow-hidden"},
+h(GxMap,{values:gxWiMapVals(t,wi),sel:lga,onSel:setLga,toggle:true,maxH:"64vh",legend:gxWiLegend(),onReset:function(){setLga(null)}})),
+h(T,{title:"Scenario controls",subtitle:"Changes update the totals instantly"},h(GxWhatIf,{lga:lga||"",onLga:setLga})))}
+
 /* ===== Situation Room: full-screen large-display mode ===== */
 var GX_ROOM_CSS=".gx-room{position:fixed;inset:0;z-index:60;background:#060a14;color:#e6ebf5;display:flex;flex-direction:column;font-family:Archivo,system-ui,sans-serif}"+
 ".gx-room-grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,330px) 1fr minmax(300px,390px);gap:14px;padding:14px}"+
@@ -3250,7 +3330,7 @@ var GX_ROOM_CSS=".gx-room{position:fixed;inset:0;z-index:60;background:#060a14;c
 "@media (prefers-reduced-motion:reduce){.gx-tick{animation:none}}"+
 "@media (max-width:1100px){.gx-room-grid{display:flex;flex-direction:column;overflow:auto}.gx-room-panel{overflow:visible;flex-shrink:0}}";
 function GxRoom(){var h=he.createElement,_d=D(),t=_d.s,ver=_d.v,nav=Ce(),ref=he.useRef(null);
-var _e=he.useState("2027"),el=_e[0],setEl=_e[1],_l=he.useState(null),lga=_l[0],setLga=_l[1],_y=he.useState("coverage"),ly=_y[0],setLy=_y[1],_f=he.useState(false),fs=_f[0],setFs=_f[1];
+var _e=he.useState("2027"),el=_e[0],setEl=_e[1],_l=he.useState(null),lga=_l[0],setLga=_l[1],_y=he.useState("coverage"),ly=_y[0],setLy=_y[1],_f=he.useState(false),fs=_f[0],setFs=_f[1];var _tb=he.useState("reported"),tab=_tb[0],setTab=_tb[1],wi=useGxWi(),wiOn=tab==="whatif"&&el!=="2023";
 he.useEffect(function(){var k=function(ev){if(ev.key==="Escape"&&!document.fullscreenElement)nav.go("geo-overview")};window.addEventListener("keydown",k);
 var f=function(){setFs(!!document.fullscreenElement)};document.addEventListener("fullscreenchange",f);return function(){window.removeEventListener("keydown",k);document.removeEventListener("fullscreenchange",f)}},[]);
 var full=function(){try{document.fullscreenElement?document.exitFullscreen():ref.current&&ref.current.requestFullscreen&&ref.current.requestFullscreen()}catch(x){}};
@@ -3258,7 +3338,7 @@ var st=gxLgaStats(t),pus=lga?gxLgaPus(t,lga):gxScope(t),S=Me(t,pus),V=gxVotes(t,
 var name=lga?t.lgaByCode.get(lga).name+" LGA":"Benue State";
 var vals;if(hist){var mx=0;Ia.forEach(function(g){var r=GX_HIST.lgas[g.code];if(r)mx=Math.max(mx,r[0]+r[1]+r[2]+r[3])});vals={};
 Ia.forEach(function(g){var r=GX_HIST.lgas[g.code];if(!r){vals[g.code]={color:"#2a2f3a",tip:[["2023 valid votes","Not held (ballot paper error)"]]};return}var tot=r[0]+r[1]+r[2]+r[3],i=Math.min(4,Math.floor(tot/mx*5));
-vals[g.code]={color:GX_SEQ[i],tip:[["2023 valid votes",gxF(tot)],["Share of state total",gxP(ne(tot,GX_HIST.valid))]]}})}else vals=gxLayerVals(t,L,st);
+vals[g.code]={color:GX_SEQ[i],tip:[["2023 valid votes",gxF(tot)],["Share of state total",gxP(ne(tot,GX_HIST.valid))]]}})}else vals=wiOn?gxWiMapVals(t,wi):gxLayerVals(t,L,st);
 var top=h("header",{style:{display:"flex",alignItems:"center",gap:14,padding:"10px 16px",borderBottom:"1px solid #1e2a44",background:"#081021",flexWrap:"wrap"}},
 h("div",{style:{display:"flex",alignItems:"center",gap:10}},h("span",{style:{width:10,height:10,borderRadius:99,background:t.live&&!hist?"#3fb27f":"#7a869e",boxShadow:t.live&&!hist?"0 0 0 4px rgba(63,178,127,.18)":"none"}}),
 h("div",null,h("div",{className:"gx-room-lab"},"BEC-2027 · State Situation Room"),h("div",{style:{fontSize:20,fontWeight:700,letterSpacing:"-0.01em"}},name))),
@@ -3279,21 +3359,22 @@ big("Reporting coverage",gxP(ne(S.reporting,S.pus),0),gxF(S.reporting)+" PUs in 
 big("Results submitted",gxF(S.resultsReceived),gxP(ne(S.resultsReceived,S.pus))+" of PUs"),
 big("Results verified",gxF(S.results.matched+S.results.confirmed),gxF(S.results.disputed)+" disputed · "+gxF(S.results.awaiting+S.results.submitted)+" awaiting review","#6aa9ff"),
 big("Open incidents",gxF(S.incidentsOpen),gxF(S.incidentsEscalated)+" escalated",S.incidentsOpen?"#e0a33a":void 0)]);
-var chips=h("div",{style:{display:"flex",flexWrap:"wrap",gap:6,padding:"10px 12px",borderBottom:"1px solid #1e2a44"}},hist?h("span",{style:{fontSize:13,color:"#aab4c8"}},"Layer: 2023 valid votes per LGA (official). Shading shows turnout volume, not which party led."):
+var chips=h("div",{style:{display:"flex",flexWrap:"wrap",gap:6,padding:"10px 12px",borderBottom:"1px solid #1e2a44"}},wiOn?h("span",{style:{fontSize:13,color:"#d4bd78"}},"What-if mode: tap an LGA to adjust it with the controls on the right. Purple LGAs have your changes."):hist?h("span",{style:{fontSize:13,color:"#aab4c8"}},"Layer: 2023 valid votes per LGA (official). Shading shows turnout volume, not which party led."):
 GX_LAYERS.filter(function(x){return["coverage","submitted","verified","incidents","connectivity","agents"].indexOf(x.id)>=0}).map(function(x){var on=x.id===ly;
 return h("button",{key:x.id,type:"button",onClick:function(){setLy(x.id)},"aria-pressed":on,style:{fontSize:14,padding:"6px 12px",borderRadius:8,border:"1px solid "+(on?"#6aa9ff":"#1e2a44"),background:on?"rgba(106,169,255,.14)":"transparent",color:on?"#dbe8ff":"#aab4c8",cursor:"pointer"}},x.label)}));
-var legend=hist?gxLegendEl("2023 valid votes",[["Lower volume",GX_SEQ[0]],["",GX_SEQ[2]],["Higher volume",GX_SEQ[4]],["Poll not held","#2a2f3a"]]):gxLegendEl(L.label,gxLegend(L),L.desc);
+var legend=wiOn?gxWiLegend():hist?gxLegendEl("2023 valid votes",[["Lower volume",GX_SEQ[0]],["",GX_SEQ[2]],["Higher volume",GX_SEQ[4]],["Poll not held","#2a2f3a"]]):gxLegendEl(L.label,gxLegend(L),L.desc);
 var mid=h("section",{className:"gx-room-panel",style:{padding:0,display:"flex",flexDirection:"column",overflow:"hidden"},"aria-label":"Benue State map"},chips,
 h("div",{style:{flex:1,minHeight:0,display:"flex",alignItems:"center"}},h("div",{style:{width:"100%"}},h(GxMap,{values:vals,sel:lga,onSel:setLga,toggle:true,big:true,maxH:"calc(100vh - 250px)",legend:legend,onReset:function(){setLga(null)}}))));
 var P=gxParties();
-var right=h("section",{className:"gx-room-panel","aria-label":"Candidate comparison"},hist?[
+var tabs=!hist&&h("div",{key:"tabs",style:{display:"flex",gap:6,marginBottom:14}},[["reported","Reported results"],["whatif","What-if controls"]].map(function(x){var on=tab===x[0];return h("button",{key:x[0],type:"button",onClick:function(){setTab(x[0])},"aria-pressed":on,style:{flex:1,fontSize:14,padding:"8px 10px",borderRadius:8,border:"1px solid "+(on?"#d4bd78":"#1e2a44"),background:on?"rgba(212,189,120,.12)":"transparent",color:on?"#f1e3b5":"#aab4c8",cursor:"pointer"}},x[1])}));
+var right=h("section",{className:"gx-room-panel","aria-label":"Candidate comparison"},wiOn?[tabs,h(GxWhatIf,{key:"wi",big:true,lga:lga||"",onLga:setLga})]:hist?[
 h("div",{key:"t",className:"gx-room-lab"},"2023 Governorship · official "+(lga?"LGA collation figures":"declared result")),
 h("ul",{key:"l",style:{display:"flex",flexDirection:"column",gap:14,marginTop:12}},(HL?GX_HIST.cands.map(function(c,i){return[c[0],c[1],HL[i]]}):lga?[]:GX_HIST.cands).map(function(c){return h("li",{key:c[0]},
 h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:16}},h("span",null,c[0]+" · "+c[1]),h("span",{className:"gx-room-num"},gxF(c[2]))),
 h("div",{style:{height:12,background:"#1e2a44",borderRadius:3,marginTop:4,position:"relative"}},h("div",{style:{position:"absolute",inset:0,width:ne(c[2],HL?Math.max.apply(null,HL):GX_HIST.cands[0][2])+"%",background:"#63a0e6",borderRadius:3}})),
 h("div",{style:{fontSize:12,color:"#8b97ad",marginTop:2}},gxP(ne(c[2],HL?HLT:GX_HIST.valid))+" of valid votes"))})),
 h("p",{key:"s",style:{fontSize:11.5,color:"#7a869e",marginTop:16,lineHeight:1.5}},"Source: "+GX_HIST.src+". All candidates shown in one neutral colour.")]:[
-h("div",{key:"t",className:"gx-room-lab"},"Reported results · not official"),
+tabs,h("div",{key:"t",className:"gx-room-lab"},"Reported results · not official"),
 h("div",{key:"n",style:{fontSize:13,color:"#8b97ad",margin:"4px 0 14px"}},gxF(V.repPus)+" of "+gxF(V.pus)+" PUs ("+gxP(ne(V.repPus,V.pus))+") have reported. Unreported PUs are not counted as zero."),
 h(GxCandBars,{key:"b",v:V,big:true}),gxCandKey(),
 h("p",{key:"s",style:{fontSize:11.5,color:"#7a869e",marginTop:16,lineHeight:1.5}},"Reported figures come from agent copies of EC8A result sheets. Only INEC declares results. No outcome is projected on this screen."),
@@ -3595,8 +3676,8 @@ h("li",null,"Scenario A resamples reporting PUs within the same LGA (bootstrap) 
 h("li",null,"Turnout in outstanding PUs is drawn uniformly between the low and high assumptions; registered voters come from the PU register."),
 h("li",null,"Intervals cover sampling and turnout uncertainty only. They do not cover late-reporting bias, disputed sheets or errors in source documents."),
 h("li",null,"No winner is ever declared. Only INEC declares results.")));
-return h("div",{className:"flex flex-col gap-4"},gxHead("Projection and scenario analysis","Transparent, assumption-driven analysis of what the reported data can and cannot support. All outputs are analytical estimates.",save),
-verdict,kp,h("div",{className:"grid gap-4 xl:grid-cols-[1fr_380px]"},h("div",{className:"flex flex-col gap-4"},rows,sensCard),inputs),h("div",{className:"grid gap-4 xl:grid-cols-2"},missCard,method),runCard)}
+return h("div",{className:"flex flex-col gap-4"},gxHead("Projection and scenario analysis","Build your own what-if scenario with the controls on the right, then check what the reported data can statistically support below. All outputs are analytical estimates.",save),
+h(GxWhatIfSection,null),h("div",{className:"mt-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-signal-300/80"},"Statistical projection"),verdict,kp,h("div",{className:"grid gap-4 xl:grid-cols-[1fr_380px]"},h("div",{className:"flex flex-col gap-4"},rows,sensCard),inputs),h("div",{className:"grid gap-4 xl:grid-cols-2"},missCard,method),runCard)}
 
 /* 8. Historical election comparison */
 function GxHist(){var h=he.createElement,_d=D(),t=_d.s,nav=Ce(),_a=he.useState("2023"),a=_a[0],setA=_a[1],_b=he.useState("2027"),b=_b[0],setB=_b[1],_m=he.useState("share"),mm=_m[0],setMm=_m[1];
