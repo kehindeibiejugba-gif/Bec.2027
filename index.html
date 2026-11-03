@@ -3239,16 +3239,150 @@ function gxCandKey(){var h=he.createElement;return h("div",{className:"mt-3 flex
 h("span",{className:"flex items-center gap-1.5"},h("span",{className:"inline-block h-2 w-4 rounded-sm",style:{opacity:0.45,background:"#8b97ad"}}),"Reported (agent result sheets)"),
 h("span",{className:"flex items-center gap-1.5"},h("span",{className:"inline-block h-2 w-4 rounded-sm",style:{background:"#8b97ad"}}),"Verified against independent sources"))}
 
+/* ===== Uploaded PU results: import, validate, and use as the projection source ===== */
+var GX_UP_KEY="bec.geo.upload",GX_UP_L=new Set();
+var GX_UP=(function(){var d=gxLoad(GX_UP_KEY,null);if(!d||!d.rows)return{on:false,ver:0,rows:null};var rows={};Object.keys(d.rows).forEach(function(k){var a=d.rows[k];rows[k]={v:a[0],valid:a[1],rej:a[2]}});
+return{on:!!d.on,ver:1,rows:rows,name:d.name,at:d.at,report:d.report}})();
+function gxUpStore(){var c={};if(GX_UP.rows)Object.keys(GX_UP.rows).forEach(function(k){var r=GX_UP.rows[k];c[k]=[r.v,r.valid,r.rej]});
+gxSave(GX_UP_KEY,GX_UP.rows?{on:GX_UP.on,rows:c,name:GX_UP.name,at:GX_UP.at,report:GX_UP.report}:null);GX_UP.ver++;GX_C={};GX_UP_L.forEach(function(f){f()})}
+function useGxUp(){var _s=he.useState(0),bump=_s[1];he.useEffect(function(){var f=function(){bump(function(x){return x+1})};GX_UP_L.add(f);return function(){GX_UP_L.delete(f)}},[]);return GX_UP}
+function gxUpOn(){return!!(GX_UP.on&&GX_UP.rows)}
+/* One place that answers "what votes do we hold for this PU?" for every projection view */
+function gxPuVotes(t,p,verifiedOnly){if(gxUpOn()){var u=GX_UP.rows[p.id];return u?{v:u.v,valid:u.valid}:null}
+var r=t.resultByPu.get(p.id);if(!r||r.status==="none")return null;if(verifiedOnly&&r.status!=="matched"&&r.status!=="confirmed")return null;
+var s=r.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean);if(!s.length)return null;var pr=s.find(function(x){return x.source==="agent"})||s[0];return{v:pr.votes,valid:pr.totalValid}}
+function gxSrcLabel(){return gxUpOn()?"results entered in the app ("+gxF(Object.keys(GX_UP.rows).length)+" PUs)":"field result submissions (live)"}
+function gxCsvParse(txt){var rows=[],row=[],f="",q=false;txt=txt.replace(/^﻿/,"");
+for(var i=0;i<txt.length;i++){var c=txt[i];if(q){if(c==='"'){if(txt[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+else if(c==='"')q=true;else if(c===","||c===";"||c==="\t"){row.push(f);f=""}else if(c==="\n"||c==="\r"){if(c==="\r"&&txt[i+1]==="\n")i++;row.push(f);f="";if(row.some(function(x){return x.trim()!==""}))rows.push(row);row=[]}else f+=c}
+row.push(f);if(row.some(function(x){return x.trim()!==""}))rows.push(row);return rows}
+function gxNz(s){return String(s==null?"":s).toLowerCase().replace(/[^a-z0-9]/g,"")}
+function gxUpParse(t,rows,name){var P=gxParties(),rep={name:name,total:0,matched:0,unmatched:[],dups:0,bad:0,overReg:0,sumMismatch:0,outScope:0,diffField:0,sameField:0,cols:{}};
+var hi=rows.findIndex(function(r){return r.some(function(c){return/pu|polling|code/i.test(String(c))})});if(hi<0)hi=0;var H=rows[hi].map(gxNz);
+var find=function(re){return H.findIndex(function(h){return re.test(h)})};
+var cPu=find(/^(pucode|pollingunitcode|pollingunit|puid|code|delimitation|pudelimitation)$/);if(cPu<0)cPu=find(/pucode|pollingunitcode|delim/);
+if(cPu<0){var sample=rows.slice(hi+1,hi+6);cPu=H.findIndex(function(h,i){return sample.some(function(r){return/^\d{2}-\d{2}-\d{2}-\d{3}$|^PU-/.test(String(r[i]).trim())})})}
+var cand={};P.forEach(function(x){var keys=[gxNz(x.code),gxNz(x.abbr),gxNz(x.cand),gxNz(x.party)];if(x.code==="PE")keys=keys.concat(["others","other","othercandidates","otherparties","oth"]);
+var i=H.findIndex(function(h){return keys.some(function(k){return k&&(h===k||h.indexOf(k)>=0)})});cand[x.code]=i});
+var cValid=find(/totalvalid|validvotes|^valid$/),cRej=find(/rejected/);
+rep.cols={pu:cPu>=0?rows[hi][cPu]:null,valid:cValid>=0?rows[hi][cValid]:null,rejected:cRej>=0?rows[hi][cRej]:null,cands:P.map(function(x){return[x.cand,cand[x.code]>=0?rows[hi][cand[x.code]]:null]})};
+if(cPu<0)return{error:"No polling-unit code column found. Use the template: the first column should be pu_code (for example 07-01-01-001).",rep:rep};
+var found=P.filter(function(x){return cand[x.code]>=0});if(found.length<2)return{error:"Fewer than two candidate columns were recognised. Name them as in the template (for example 'Candidate A (PTY-A)').",rep:rep};
+var byCode={};t.w.pus.forEach(function(p){byCode[p.code]=p;byCode[p.id.toUpperCase()]=p});var out={};
+var num=function(v){v=String(v==null?"":v).replace(/[,\s]/g,"");if(v==="")return 0;var n=Number(v);return isFinite(n)?n:NaN};
+rows.slice(hi+1).forEach(function(r){var code=String(r[cPu]==null?"":r[cPu]).trim();if(!code)return;rep.total++;var p=byCode[code]||byCode[code.toUpperCase()];
+if(!p){if(rep.unmatched.length<12)rep.unmatched.push(code);else rep.unmatched.more=(rep.unmatched.more||0)+1;return}
+if(!ie(t.user,p)){rep.outScope++;return}if(out[p.id]){rep.dups++;return}
+var v={},sum=0,bad=false;P.forEach(function(x){var n=cand[x.code]>=0?num(r[cand[x.code]]):0;if(isNaN(n)||n<0||n%1){bad=true;n=0}v[x.code]=n;sum+=n});if(bad){rep.bad++;return}
+var valid=cValid>=0?num(r[cValid]):sum,rej=cRej>=0?num(r[cRej]):0;if(isNaN(valid))valid=sum;if(isNaN(rej))rej=0;
+if(cValid>=0&&valid!==sum)rep.sumMismatch++;if(sum+rej>p.registered)rep.overReg++;
+out[p.id]={v:v,valid:sum,rej:rej};rep.matched++;
+var f=t.resultByPu.get(p.id);if(f&&f.status!=="none"){var s=f.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean),pr=s.find(function(x){return x.source==="agent"})||s[0];
+if(pr){if(P.every(function(x){return(pr.votes[x.code]||0)===v[x.code]}))rep.sameField++;else rep.diffField++}}});
+rep.unmatchedMore=rep.unmatched.more||0;rep.unmatched=rep.unmatched.slice();return{rows:out,rep:rep}}
+function gxUpTemplate(t,withField){var P=gxParties();var head=["pu_code","lga","ward","polling_unit","registered"].concat(P.map(function(x){return x.cand+" ("+x.abbr+")"})).concat(["total_valid","rejected"]);
+var rows=gxScope(t).map(function(p){var base=[p.code,t.lgaByCode.get(p.lgaCode).name,t.wardById.get(p.wardId).name,p.name,p.registered],r=withField?gxPuVotesField(t,p):null;
+return base.concat(P.map(function(x){return r?r.v[x.code]||0:""})).concat([r?r.valid:"",r?r.rej:""])}).filter(function(r){return!withField||r[5]!==""});
+gxCsv(withField?"bec-pu-results-from-field.csv":"bec-pu-results-template.csv",head,rows)}
+function gxPuVotesField(t,p){var r=t.resultByPu.get(p.id);if(!r||r.status==="none")return null;var s=r.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean);if(!s.length)return null;var pr=s.find(function(x){return x.source==="agent"})||s[0];return{v:pr.votes,valid:pr.totalValid,rej:pr.rejected}}
+function gxLoadXlsx(cb){if(window.XLSX)return cb(window.XLSX);var sc=document.createElement("script");sc.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";sc.onload=function(){cb(window.XLSX||null)};sc.onerror=function(){cb(null)};document.head.appendChild(sc)}
+function GxUpload(){var h=he.createElement,_d=D(),t=_d.s,up=useGxUp(),_e=he.useState(null),err=_e[0],setErr=_e[1],_b=he.useState(false),busy=_b[0],setBusy=_b[1],P=gxParties();
+var take=function(name,rows){var r=gxUpParse(t,rows,name);if(r.error){setErr(r.error);return}if(!r.rep.matched){setErr("No rows matched a Benue polling-unit code. Check the pu_code column.");return}
+setErr(null);GX_UP.rows=Object.assign({},GX_UP.rows||{},r.rows);GX_UP.report=r.rep;GX_UP.name=name;GX_UP.at=gxHm(t.now);GX_UP.on=true;gxUpStore()};
+var onFile=function(ev){var f=ev.target.files&&ev.target.files[0];ev.target.value="";if(!f)return;setBusy(true);setErr(null);
+if(/\.xlsx?$/i.test(f.name)){gxLoadXlsx(function(X){if(!X){setBusy(false);setErr("Excel support couldn't load. Save the sheet as CSV and upload that instead.");return}
+f.arrayBuffer().then(function(buf){try{var wb=X.read(buf,{type:"array"}),ws=wb.Sheets[wb.SheetNames[0]];take(f.name,X.utils.sheet_to_json(ws,{header:1,raw:false,defval:""}))}catch(x){setErr("That Excel file couldn't be read.")}setBusy(false)})})}
+else f.text().then(function(txt){try{take(f.name,gxCsvParse(txt))}catch(x){setErr("That file couldn't be read as CSV.")}setBusy(false)})};
+var R=up.report,on=gxUpOn(),tot={},sum=0;if(up.rows){P.forEach(function(x){tot[x.code]=0});Object.keys(up.rows).forEach(function(k){var r=up.rows[k];P.forEach(function(x){tot[x.code]+=r.v[x.code]||0})});P.forEach(function(x){sum+=tot[x.code]})}
+var seg=function(id,label,dis){var a=(id==="up")===on;return h("button",{key:id,type:"button",disabled:dis,onClick:function(){GX_UP.on=id==="up";gxUpStore()},"aria-pressed":a,className:N("rounded-md px-2.5 py-1 text-xs font-medium transition",a?"bg-signal-500/20 text-signal-200":dis?"text-fog-600":"text-fog-400 hover:text-fog-200")},label)};
+var scope=gxScope(t).length;
+return h("div",null,h("div",{className:"flex flex-wrap items-center gap-2"},
+h("label",{className:"inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-signal-500 bg-signal-500/15 px-2.5 py-1 text-[11.5px] text-signal-100"},h(gxIcon("Upload"),{className:"h-3.5 w-3.5"}),busy?"Reading…":"Upload PU results (CSV or Excel)",
+h("input",{type:"file",accept:".csv,.txt,.xlsx,.xls",onChange:onFile,"aria-label":"Upload polling-unit results file",style:{position:"absolute",width:1,height:1,opacity:0}})),
+gxBtn("Download template",function(){gxUpTemplate(t,false)},null,gxIcon("Download")),gxBtn("Export field results in this format",function(){gxUpTemplate(t,true)},null,gxIcon("FileSpreadsheet","Download")),
+),
+h("p",{className:"mt-2 text-[11.5px] text-fog-500"},"For large batches only. One row per polling unit: pu_code (e.g. 07-01-01-001), then one column of votes per candidate. Imported rows are added to the entered results."),
+err&&h("div",{className:"mt-3 rounded-lg border border-warn/30 bg-warn/[0.05] px-4 py-2.5 text-xs text-warn"},err),
+R&&h("div",{className:"mt-3 grid gap-4 lg:grid-cols-2"},
+h("div",null,h("div",{className:"mb-1.5 text-[11px] uppercase tracking-wider text-fog-500"},"Validation · "+R.name+" · loaded "+(up.at||"")),
+gxRows([["Rows read",gxF(R.total)],["Matched to Benue PUs",gxF(R.matched)+" ("+gxP(ne(R.matched,scope))+" of PUs in scope)"],["Unrecognised PU codes",gxF(R.unmatched.length+(R.unmatchedMore||0))],["Duplicate rows (first kept)",gxF(R.dups)],
+["Rows with invalid numbers (skipped)",gxF(R.bad)],["Votes exceed registered voters",gxF(R.overReg)],["total_valid differs from candidate sum",gxF(R.sumMismatch)],["Outside your access (skipped)",gxF(R.outScope)],
+["Same as field submission",gxF(R.sameField)],["Different from field submission",gxF(R.diffField)]]),
+R.unmatched.length>0&&h("div",{className:"mt-2 text-[11px] text-fog-500"},"Unrecognised: "+R.unmatched.join(", ")+(R.unmatchedMore?" and "+R.unmatchedMore+" more":"")),
+R.diffField>0&&h("div",{className:"mt-2 text-[11px] text-warn"},"Where the file and field copies differ, both are kept. The field records are not changed; the file is only used when the uploaded source is selected.")),
+h("div",null,h("div",{className:"mb-1.5 text-[11px] uppercase tracking-wider text-fog-500"},"Candidate totals in the file"),h("ul",{className:"flex flex-col gap-2"},P.map(function(x){return h("li",{key:x.code,className:"text-xs"},
+h("div",{className:"flex justify-between"},h("span",{className:"text-fog-100"},x.cand+(R.cols.cands.find(function(c){return c[0]===x.cand})[1]?"":" (no column)")),h("span",{className:"font-mono text-fog-100"},gxF(tot[x.code])+" · "+gxP(ne(tot[x.code],sum)))),
+h("div",{className:"relative mt-1 h-2 rounded-sm bg-line"},h("div",{className:"absolute inset-y-0 rounded-sm",style:{left:0,width:ne(tot[x.code],Math.max.apply(null,P.map(function(y){return tot[y.code]}).concat([1])))+"%",background:x.color}})))})))),
+)}
+/* Per-LGA, per-candidate projection table (scenario A point estimate plus any what-if changes) */
+function GxLgaProj(){var h=he.createElement,_d=D(),t=_d.s,wi=useGxWi(),up=useGxUp(),B=gxWiBase(t),R=gxWiCalc(t,wi),P=gxParties();
+var rows=Object.keys(B.lgas).map(function(k){var b=B.lgas[k],L=R.lgas[k],ov=wi.lgas[k]||{},o={code:k,name:b.name,nRep:b.nRep,nAll:b.nRep+b.nOut,turn:L.turn,edited:L.edited};
+P.forEach(function(x){o[x.code]=Math.max(0,b.rep[x.code]+L.est[x.code]+((ov.adj&&ov.adj[x.code])||0));o["r"+x.code]=b.rep[x.code]});return o});
+var tot={};P.forEach(function(x){tot[x.code]=0;rows.forEach(function(r){tot[x.code]+=r[x.code]})});
+return h(T,{title:"Projected votes by LGA and candidate",subtitle:"Reported votes from "+gxSrcLabel()+", plus outstanding PUs estimated at each LGA's own pattern and your what-if changes. Analytical estimate, not a result.",bodyClass:"p-0"},
+h(GxTable,{rows:rows,rowKey:function(r){return r.code},search:function(r){return r.name},placeholder:"Search LGAs",csv:"bec-projection-by-lga",sort:{i:1,d:-1},
+cols:[["LGA",function(r){return h("span",null,r.name,r.edited?h("span",{className:"ml-1.5 text-[10px] text-signal-300"},"✎"):null)},"left",function(r){return r.name}],
+["PUs reported",function(r){return gxF(r.nRep)+" / "+gxF(r.nAll)},"right",function(r){return r.nRep/r.nAll}],["Turnout used",function(r){return gxP(r.turn*100)},"right",function(r){return r.turn}]].concat(P.map(function(x){
+return[x.cand,function(r){return h("span",{title:"Reported "+gxF(r["r"+x.code])},gxF(r[x.code]))},"right",function(r){return Math.round(r[x.code])}]}))}),
+h("div",{className:"flex flex-wrap gap-3 border-t border-line px-3 py-2.5 text-xs"},h("span",{className:"text-fog-400"},"Statewide:"),P.map(function(x){return h("span",{key:x.code,className:"font-mono text-fog-100"},x.cand+" "+gxF(tot[x.code]))})),
+h("div",{className:"px-3 pb-3"},gxSrc(gxSrcLabel(),t.now)))}
+
+/* In-app results entry: pick a ward, type votes per candidate for each PU, save */
+function GxEntry(){var h=he.createElement,_d=D(),t=_d.s,up=useGxUp(),P=gxParties(),lgas=t.w.lgas.filter(function(l){return gxLgaPus(t,l.code).length});
+var _l=he.useState(lgas[0].code),lc=_l[0],setLc=_l[1],wards=t.lgaByCode.get(lc).wardIds.filter(function(id){return gxWardPus(t,id).length});
+var _w=he.useState(wards[0]),wid0=_w[0],setW=_w[1],wid=wards.indexOf(wid0)>=0?wid0:wards[0],pus=gxWardPus(t,wid);
+var init=function(){var o={};pus.forEach(function(p){var r=GX_UP.rows&&GX_UP.rows[p.id],e={};P.forEach(function(x){e[x.code]=r?String(r.v[x.code]):""});e.rej=r?String(r.rej||0):"";o[p.id]=e});return o};
+var _f=he.useState(init),draft=_f[0],setDraft=_f[1],_k=he.useState(""),key=_k[0],setKey=_k[1],_m=he.useState(null),msg=_m[0],setMsg=_m[1],_o=he.useState(false),bulk=_o[0],setBulk=_o[1];
+if(key!==wid+"|"+up.ver){setKey(wid+"|"+up.ver);setDraft(init());}
+var val=function(s){s=String(s).trim();if(s==="")return null;if(!/^\d+$/.test(s))return NaN;return+s};
+var rowInfo=function(p){var e=draft[p.id]||{},blank=true,bad=false,sum=0;P.forEach(function(x){var v=val(e[x.code]);if(v!==null)blank=false;if(isNaN(v))bad=true;else sum+=v||0});var rj=val(e.rej);if(rj!==null)blank=false;if(isNaN(rj))bad=true;
+return{blank:blank,bad:bad,sum:sum,rej:isNaN(rj)?0:rj||0,over:!bad&&sum+(isNaN(rj)?0:rj||0)>p.registered,saved:!!(GX_UP.rows&&GX_UP.rows[p.id])}};
+var setCell=function(pid,k,v){var n=Object.assign({},draft);n[pid]=Object.assign({},n[pid]);n[pid][k]=v.replace(/[^\d]/g,"");setDraft(n);setMsg(null)};
+var save=function(){var rows=Object.assign({},GX_UP.rows||{}),ok=0,cleared=0,bad=0,over=0;pus.forEach(function(p){var r=rowInfo(p);if(r.bad){bad++;return}if(r.over){over++;return}if(r.blank){if(rows[p.id]){delete rows[p.id];cleared++}return}
+var v={};P.forEach(function(x){v[x.code]=val(draft[p.id][x.code])||0});rows[p.id]={v:v,valid:r.sum,rej:r.rej};ok++});
+GX_UP.rows=Object.keys(rows).length?rows:null;if(GX_UP.rows&&ok)GX_UP.on=true;GX_UP.name="entered";gxUpStore();setMsg((ok?gxF(ok)+(ok===1?" polling unit saved":" polling units saved"):"Nothing to save")+(cleared?", "+cleared+" cleared":"")+(bad?". "+bad+(bad===1?" row has":" rows have")+" invalid numbers and wasn't saved":"")+(over?". "+over+(over===1?" row exceeds":" rows exceed")+" registered voters and wasn't saved; please check":"")+".")};
+var fillField=function(){var n=Object.assign({},draft);pus.forEach(function(p){var f=gxPuVotesField(t,p);if(!f)return;var e={};P.forEach(function(x){e[x.code]=String(f.v[x.code]||0)});e.rej=String(f.rej||0);n[p.id]=e});setDraft(n);setMsg("Filled from field submissions where available. Check, then save.")};
+var clearWard=function(){var n={};pus.forEach(function(p){var e={};P.forEach(function(x){e[x.code]=""});e.rej="";n[p.id]=e});setDraft(n);setMsg("Cleared on screen. Save to remove these polling units from the entered results.")};
+var nextWard=function(){var all=[];lgas.forEach(function(l){t.lgaByCode.get(l.code).wardIds.forEach(function(id){if(gxWardPus(t,id).length)all.push([l.code,id])})});var i=all.findIndex(function(x){return x[1]===wid});
+for(var j=1;j<=all.length;j++){var c=all[(i+j)%all.length];if(gxWardPus(t,c[1]).some(function(p){return!(GX_UP.rows&&GX_UP.rows[p.id])})){setLc(c[0]);setW(c[1]);return}}};
+var entered=GX_UP.rows?Object.keys(GX_UP.rows).length:0,scope=gxScope(t).length,wardDone=pus.filter(function(p){return GX_UP.rows&&GX_UP.rows[p.id]}).length;
+var inp=function(p,k,label){var r=draft[p.id]||{};return h("td",{key:k,className:"px-1.5 py-1"},h("input",{type:"text",inputMode:"numeric",pattern:"[0-9]*",value:r[k]||"",onChange:function(ev){setCell(p.id,k,ev.target.value)},"aria-label":label+", "+p.name,placeholder:"–",
+className:"w-full rounded-md border border-line bg-ink-950 px-2 py-1 text-right font-mono text-xs text-fog-100",style:{minWidth:64}}))};
+var seg=function(id,label){var a=(id==="up")===gxUpOn(),dis=id==="up"&&!entered;return h("button",{key:id,type:"button",disabled:dis,onClick:function(){GX_UP.on=id==="up";gxUpStore()},"aria-pressed":a,className:N("rounded-md px-2.5 py-1 text-xs font-medium transition",a?"bg-signal-500/20 text-signal-200":dis?"text-fog-600":"text-fog-400 hover:text-fog-200")},label)};
+var table=h("div",{className:"overflow-auto",style:{maxHeight:480}},h("table",{className:"w-full border-collapse text-xs tabular-nums"},
+h("thead",null,h("tr",null,["Polling unit","Registered"].concat(P.map(function(x){return x.cand})).concat(["Rejected","Total valid",""]).map(function(c,i){return h("th",{key:i,className:N("sticky top-0 z-[1] whitespace-nowrap border-b border-line bg-ink-900 px-2 py-2 font-medium text-fog-400",i===0?"text-left":"text-right")},
+i>=2&&i<2+P.length?h("span",null,h("span",{className:"inline-block h-2 w-2 rounded-full",style:{background:P[i-2].color,marginRight:5}}),c):c)}))),
+h("tbody",null,pus.map(function(p){var r=rowInfo(p);return h("tr",{key:p.id,className:"border-b border-line/50"},
+h("td",{className:"px-2 py-1 text-fog-100",style:{minWidth:180}},h("div",{className:"truncate"},p.name),h("div",{className:"font-mono text-[10.5px] text-fog-500"},p.code)),
+h("td",{className:"px-2 py-1 text-right font-mono text-fog-400"},gxF(p.registered)),P.map(function(x){return inp(p,x.code,x.cand)}),inp(p,"rej","Rejected"),
+h("td",{className:N("px-2 py-1 text-right font-mono",r.over?"text-bad":"text-fog-100")},r.blank?"–":gxF(r.sum)),
+h("td",{className:"whitespace-nowrap px-2 py-1 text-right text-[11px]"},r.bad?h("span",{className:"text-bad"},"Whole numbers only"):r.over?h("span",{className:"text-bad"},"Exceeds registered"):r.saved?h("span",{className:"text-ok"},"Saved"):r.blank?h("span",{className:"text-fog-600"},"Outstanding"):h("span",{className:"text-warn"},"Not saved")))}))));
+return h(T,{title:"Enter polling-unit results",subtitle:"Type each candidate's votes for every polling unit in a ward, then save. Projections update straight away.",
+actions:h("div",{className:"inline-flex gap-1 rounded-lg border border-line bg-ink-900 p-1"},seg("field","Use field submissions"),seg("up","Use entered results"))},
+h("div",{className:"flex flex-wrap items-center gap-2"},gxSel(lc,function(v){if(!v)return;setLc(v);var f=t.lgaByCode.get(v).wardIds.find(function(id){return gxWardPus(t,id).length});setW(f)},lgas.map(function(l){return[l.code,l.name]}),"LGA","w-40"),
+gxSel(wid,function(v){v&&setW(v)},wards.map(function(id){var n=gxWardPus(t,id).filter(function(p){return GX_UP.rows&&GX_UP.rows[p.id]}).length,tt=gxWardPus(t,id).length;return[id,t.wardById.get(id).name+" ("+n+"/"+tt+")"]}),"Ward","w-40"),
+h("span",{className:"text-[11.5px] text-fog-400"},wardDone+" of "+pus.length+" saved in this ward"),h("span",{className:"flex-1"}),
+gxBtn("Fill from field submissions",fillField,null,gxIcon("Copy")),gxBtn("Clear ward",clearWard,null,gxIcon("Trash2","X")),gxBtn("Next ward to enter",nextWard,null,gxIcon("ArrowRight","ChevronRight"))),
+h("div",{className:"mt-3 overflow-hidden rounded-md border border-line"},table),
+h("div",{className:"mt-3 flex flex-wrap items-center gap-3"},h("button",{type:"button",onClick:save,className:"rounded-md border border-signal-500 bg-signal-500/20 px-4 py-1.5 text-xs font-semibold text-signal-100 hover:bg-ink-800"},"Save "+t.wardById.get(wid).name),
+msg&&h("span",{className:"text-[11.5px] text-fog-300"},msg),h("span",{className:"flex-1"}),
+h("span",{className:"text-[11.5px] text-fog-400"},"Entered statewide: ",h("b",{className:"font-mono text-fog-100"},gxF(entered)+" / "+gxF(scope))," PUs ("+gxP(ne(entered,scope))+")")),
+h("div",{className:"relative mt-2 h-1.5 rounded-sm bg-line"},h("div",{className:"absolute inset-y-0 rounded-sm",style:{left:0,width:ne(entered,scope)+"%",background:O.info}})),
+h("p",{className:"mt-2 text-[11px] text-fog-500"},"Leave a polling unit blank if it hasn't reported: it is treated as outstanding, never as zero. Entered results are kept separate from field submissions and never overwrite them."),
+h("div",{className:N("mt-3 rounded-md border px-3 py-2 text-xs",gxUpOn()?"border-signal-500 text-signal-100":"border-line text-fog-300")},"Projections below are using: ",h("b",null,gxSrcLabel())),
+h("div",{className:"mt-3 border-t border-line pt-3"},h("button",{type:"button",onClick:function(){setBulk(!bulk)},"aria-expanded":bulk,className:"text-[11.5px] text-fog-400 hover:text-fog-100"},(bulk?"▾ ":"▸ ")+"Bulk import from a spreadsheet (optional)"),
+bulk&&h("div",{className:"mt-3"},h(GxUpload,null)),
+entered>0&&h("div",{className:"mt-2"},h("button",{type:"button",onClick:function(){GX_UP.rows=null;GX_UP.report=null;GX_UP.on=false;gxUpStore();setMsg("All entered results removed.")},className:"text-[11px] text-fog-500 hover:text-bad"},"Remove all entered results"))))}
+
 /* ===== What-if scenario builder: analyst-controlled additions, subtractions and allocations ===== */
 var GX_WI_KEY="bec.geo.whatif",GX_WI=gxLoad(GX_WI_KEY,{all:{},lgas:{}}),GX_WI_L=new Set();
 function gxWiSet(fn){GX_WI=fn(JSON.parse(JSON.stringify(GX_WI)));gxSave(GX_WI_KEY,GX_WI);GX_WI_L.forEach(function(f){f()})}
 function useGxWi(){var _s=he.useState(0),bump=_s[1];he.useEffect(function(){var f=function(){bump(function(x){return x+1})};GX_WI_L.add(f);return function(){GX_WI_L.delete(f)}},[]);return GX_WI}
 function gxNorm(sh){var s=0,o={};for(var k in sh)s+=Math.max(0,sh[k]);for(var k2 in sh)o[k2]=s?Math.max(0,sh[k2])/s:0;return o}
 /* per-LGA baseline: reported votes, outstanding registered voters, observed turnout and shares */
-function gxWiBase(t){var k=t.version+"|"+(t.user&&t.user.id);if(GX_C.wk===k)return GX_C.wv;var codes=es.map(function(p){return p.code}),st={rep:{},cast:0,reg:0},out={};codes.forEach(function(c){st.rep[c]=0});
+function gxWiBase(t){var k=t.version+"|"+(t.user&&t.user.id)+"|"+GX_UP.ver+(gxUpOn()?"u":"f");if(GX_C.wk===k)return GX_C.wv;var codes=es.map(function(p){return p.code}),st={rep:{},cast:0,reg:0},out={};codes.forEach(function(c){st.rep[c]=0});
 t.w.lgas.forEach(function(l){var pus=gxLgaPus(t,l.code);if(!pus.length)return;var o={code:l.code,name:l.name,rep:{},cast:0,regRep:0,regOut:0,nRep:0,nOut:0};codes.forEach(function(c){o.rep[c]=0});
-pus.forEach(function(p){var r=t.resultByPu.get(p.id),s=r&&r.status!=="none"?r.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean):[];
-if(s.length){var pr=s.find(function(x){return x.source==="agent"})||s[0];codes.forEach(function(c){o.rep[c]+=pr.votes[c]||0});o.cast+=pr.totalValid||0;o.regRep+=p.registered;o.nRep++}else{o.regOut+=p.registered;o.nOut++}});
+pus.forEach(function(p){var pv=gxPuVotes(t,p);if(pv){codes.forEach(function(c){o.rep[c]+=pv.v[c]||0});o.cast+=pv.valid||0;o.regRep+=p.registered;o.nRep++}else{o.regOut+=p.registered;o.nOut++}});
 codes.forEach(function(c){st.rep[c]+=o.rep[c]});st.cast+=o.cast;st.reg+=o.regRep;out[l.code]=o});
 var stSh=gxNorm(st.rep),stTurn=st.reg?st.cast/st.reg:0.35;
 Object.keys(out).forEach(function(k2){var o=out[k2],tot=0;codes.forEach(function(c){tot+=o.rep[c]});o.defSh=tot>200?gxNorm(o.rep):stSh;o.defTurn=o.regRep>2000?o.cast/o.regRep:stTurn});
@@ -3262,7 +3396,7 @@ function gxStep(label,val,onMinus,onPlus,big,disabled,name){name=name||(typeof l
 return h("div",{className:"flex items-center justify-between gap-2",style:{fontSize:big?15:12}},h("span",{className:"min-w-0 truncate text-fog-200"},label),
 h("div",{className:"flex shrink-0 items-center gap-1.5"},h("button",{type:"button",style:bs,disabled:disabled,onClick:onMinus,"aria-label":"Decrease "+name},"−"),
 h("span",{className:"font-mono text-fog-50",style:{minWidth:big?86:70,textAlign:"center"}},val),h("button",{type:"button",style:bs,disabled:disabled,onClick:onPlus,"aria-label":"Increase "+name},"+")))}
-function GxWhatIf(p){var h=he.createElement,_d=D(),t=_d.s,wi=useGxWi(),B=gxWiBase(t),P=gxParties(),big=!!p.big;
+function GxWhatIf(p){var h=he.createElement,_d=D(),t=_d.s,wi=useGxWi(),up=useGxUp(),B=gxWiBase(t),P=gxParties(),big=!!p.big;
 var _l=he.useState(p.lga||""),sel=_l[0],setSel=_l[1];he.useEffect(function(){if(p.lga!==void 0)setSel(p.lga||"")},[p.lga]);
 var _a=he.useState(1000),step=_a[0],setStep=_a[1];
 var key=sel&&B.lgas[sel]?sel:"",scope=key?(wi.lgas[key]||{}):(wi.all||{}),info=key?B.lgas[key]:null;
@@ -3283,7 +3417,7 @@ var lgaSel=gxSel(key,function(v){setSel(v||"");p.onLga&&p.onLga(v||null)},[["","
 return h("div",{className:"flex flex-col"},
 h("div",{className:"flex items-center justify-between gap-2"},h("div",{style:{fontSize:big?11:10.5,letterSpacing:".12em",textTransform:"uppercase",color:"#d4bd78"}},"What-if · analyst scenario"),
 h("button",{type:"button",onClick:clearAll,className:"text-[11px] text-fog-400 hover:text-fog-100"},"Reset all")),
-h("p",{className:"mt-1 text-fog-400",style:{fontSize:big?12.5:11.5,lineHeight:1.45}},"Adjust the assumptions for polling units that haven't reported yet. Reported votes stay fixed. This is your scenario, not a projection or a result."),
+h("p",{className:"mt-1 text-fog-400",style:{fontSize:big?12.5:11.5,lineHeight:1.45}},"Adjust the assumptions for polling units that haven't reported yet. Reported votes stay fixed. This is your scenario, not a projection or a result."),h("div",{className:"mt-1.5 rounded-md border border-line px-2.5 py-1.5 text-fog-300",style:{fontSize:big?12:11}},"Reported votes from: ",h("b",{className:"text-fog-100"},gxSrcLabel())),
 h("div",{style:lab},"Area"),lgaSel,
 info&&h("div",{className:"mt-1.5 text-fog-500",style:{fontSize:big?12:11}},gxF(info.nRep)+" PUs reported · "+gxF(info.nOut)+" outstanding · "+gxF(info.regOut)+" registered voters outstanding"),
 h("div",{style:lab},"Scenario totals, statewide"),
@@ -3305,7 +3439,7 @@ key&&h("div",null,h("div",{style:lab},"Add or subtract votes in "+info.name),
 h("div",{className:"mb-2 flex flex-wrap gap-1.5"},[100,1000,5000].map(function(s){var on=step===s;return h("button",{key:s,type:"button",onClick:function(){setStep(s)},"aria-pressed":on,className:N("rounded-full border px-2.5 py-0.5 text-[11px] transition",on?"border-signal-500 bg-signal-500/15 text-signal-200":"border-line text-fog-400 hover:text-fog-200")},"Step "+gxF(s))})),
 h("div",{className:"flex flex-col",style:{gap:big?8:6}},P.map(function(x){var a=(scope.adj&&scope.adj[x.code])||0;return h("div",{key:x.code},gxStep(x.cand,(a>0?"+":"")+gxF(a),function(){setAdj(x.code,-step)},function(){setAdj(x.code,step)},big,false,x.cand+" votes"))})),
 h("div",{className:"mt-1 text-fog-500",style:{fontSize:big?11.5:10.5}},"Use for late sheets, excluded disputed sheets or other known changes. Totals never go below zero.")),
-h("div",{className:"mt-2"},h("button",{type:"button",onClick:clear,className:"text-[11px] text-signal-300 hover:text-signal-100"},key?"Clear changes for "+info.name:"Clear statewide defaults")),
+h("div",{className:"mt-2"},h("button",{type:"button",onClick:clear,className:"text-[11px] text-signal-300 hover:text-fog-100"},key?"Clear changes for "+info.name:"Clear statewide defaults")),
 edited.length>0&&h("div",null,h("div",{style:lab},"LGAs you've adjusted"),h("div",{className:"flex flex-wrap gap-1.5"},edited.map(function(k){return h("span",{key:k,className:"inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-0.5 text-[11px] text-fog-200"},
 h("button",{type:"button",onClick:function(){setSel(k);p.onLga&&p.onLga(k)}},B.lgas[k].name),h("button",{type:"button","aria-label":"Clear "+B.lgas[k].name,className:"text-fog-500 hover:text-bad",onClick:function(){gxWiSet(function(w){delete w.lgas[k];return w})}},"×"))}))),
 h("div",{className:"mt-3 flex flex-wrap gap-2"},gxBtn("Export scenario",function(){gxCsv("bec-what-if-scenario.csv",["LGA","Turnout assumed","Outstanding votes"].concat(P.map(function(x){return x.cand+" est."})).concat(P.map(function(x){return x.cand+" adj."})),
@@ -3608,8 +3742,7 @@ h(T,{title:"Filter",subtitle:"Choose the geography to compare"},ctl),group,h("di
 
 /* 7. Projection and scenario analysis */
 function gxProjRun(t,pus,o){var P=gxParties(),codes=P.map(function(x){return x.code}),by={};
-pus.forEach(function(p){(by[p.lgaCode]=by[p.lgaCode]||{rep:[],out:[]});var r=t.resultByPu.get(p.id),ok=r&&r.status!=="none"&&(!o.verifiedOnly||r.status==="matched"||r.status==="confirmed");
-if(ok){var s=r.submissionIds.map(function(id){return t.subById.get(id)}).filter(Boolean),pr=s.find(function(x){return x.source==="agent"})||s[0];if(pr){by[p.lgaCode].rep.push({reg:p.registered,v:pr.votes,valid:pr.totalValid});return}}by[p.lgaCode].out.push(p)});
+pus.forEach(function(p){(by[p.lgaCode]=by[p.lgaCode]||{rep:[],out:[]});var pv=gxPuVotes(t,p,o.verifiedOnly);if(pv){by[p.lgaCode].rep.push({reg:p.registered,v:pv.v,valid:pv.valid});return}by[p.lgaCode].out.push(p)});
 var lg=Object.keys(by),nRep=0,nOut=0,regRep=0,regOut=0,regAll=0,base={};codes.forEach(function(c){base[c]=0});
 lg.forEach(function(k){by[k].rep.forEach(function(r){nRep++;regRep+=r.reg;codes.forEach(function(c){base[c]+=r.v[c]||0})});by[k].out.forEach(function(p){nOut++;regOut+=p.registered})});regAll=regRep+regOut;
 /* defensibility checks */
@@ -3617,7 +3750,7 @@ var fails=[],cover=nRep/(nRep+nOut||1);if(cover<o.minCover/100)fails.push("Only 
 var thin=lg.filter(function(k){var b=by[k];return b.rep.length/(b.rep.length+b.out.length)<o.minLga/100||b.rep.length<5});if(thin.length)fails.push(thin.length+" LGA"+(thin.length>1?"s have":" has")+" under "+o.minLga+"% reporting: "+thin.map(function(k){return t.lgaByCode.get(k).name}).join(", ")+".");
 var dis=0;lg.forEach(function(k){var a=by[k].rep.reduce(function(s,r){return s+r.reg},0),b=by[k].rep.concat(by[k].out.map(function(p){return{reg:p.registered}})).reduce(function(s,r){return s+r.reg},0);dis+=Math.abs(a/(regRep||1)-b/(regAll||1))});dis/=2;
 if(dis>o.maxBias/100)fails.push("Reporting is geographically uneven: the dissimilarity index between reported and registered voters by LGA is "+gxP(dis*100)+", above "+o.maxBias+"%.");
-var V=gxVotes(t,pus),dispShare=V.received?(V.disputed+V.conflicts)/V.received:0;if(dispShare>0.15)fails.push(gxP(dispShare*100)+" of received results are disputed or have conflicting copies.");
+var V=gxVotes(t,pus),dispShare=V.received?(V.disputed+V.conflicts)/V.received:0;if(!gxUpOn()&&dispShare>0.15)fails.push(gxP(dispShare*100)+" of received results are disputed or have conflicting copies.");
 /* scenario model: bootstrap reporting PUs within each LGA, draw turnout for outstanding PUs */
 var rng=mvRng(mvHash("proj"+o.seed+o.scen+o.tLo+o.tHi)),N=o.iter,draws=codes.map(function(){return[]});
 var sw={},swTot=0;codes.forEach(function(c){sw[c]=base[c];swTot+=base[c]});
@@ -3630,10 +3763,10 @@ codes.forEach(function(c,i){draws[i].push(tot[c])})}
 var q=function(a,p){var s=a.slice().sort(function(x,y){return x-y});return s[Math.min(s.length-1,Math.floor(p*s.length))]};
 var res=P.map(function(x,i){return{code:x.code,cand:x.cand,abbr:x.abbr,color:x.color,base:base[x.code],lo:q(draws[i],0.05),mid:q(draws[i],0.5),hi:q(draws[i],0.95),max:base[x.code]+regOut*o.tHi/100}});
 return{res:res,fails:fails,ok:!fails.length,cover:cover,nRep:nRep,nOut:nOut,regOut:regOut,dis:dis,by:by,at:t.now,inputs:Object.assign({},o)}}
-function GxProj(){var h=he.createElement,_d=D(),t=_d.s,pus=gxScope(t);
+function GxProj(){var h=he.createElement,_d=D(),t=_d.s,pus=gxScope(t),up=useGxUp();
 var _o=he.useState({scen:"lga",tLo:25,tHi:45,minCover:50,minLga:25,maxBias:10,iter:300,seed:1,verifiedOnly:false}),o=_o[0],setO=_o[1],_r=he.useState(gxLoad("bec.geo.runs",[])),runs=_r[0],setRuns=_r[1];
 var set=function(k,v){var n=Object.assign({},o);n[k]=v;if(k==="tLo"&&v>n.tHi)n.tHi=v;if(k==="tHi"&&v<n.tLo)n.tLo=v;setO(n)};
-var R=he.useMemo(function(){return gxProjRun(t,pus,o)},[_d.v,JSON.stringify(o)]);
+var R=he.useMemo(function(){return gxProjRun(t,pus,o)},[_d.v,JSON.stringify(o),up.ver]);
 var top2=R.res.slice(0,4).slice().sort(function(a,b){return b.base-a.base}).slice(0,2),overlap=top2.length===2&&top2[0].lo<=top2[1].hi;
 var num=function(k,label,min,max,step){return h("label",{className:"flex flex-col gap-1 text-[11px] text-fog-400"},label+": "+o[k]+(k==="iter"?"":"%"),h("input",{type:"range",min:min,max:max,step:step||1,value:o[k],onChange:function(ev){set(k,+ev.target.value)},"aria-label":label}))};
 var inputs=h(T,{title:"Scenario and assumptions",subtitle:"Every assumption is stated here and saved with each run"},
@@ -3658,8 +3791,8 @@ h("div",{className:"absolute inset-y-0 rounded-sm",style:{left:0,width:pct(x.bas
 R.ok&&h("div",{className:"absolute rounded-sm",style:{top:3,bottom:3,left:pct(x.lo),width:"calc("+pct(x.hi)+" - "+pct(x.lo)+")",background:x.color,opacity:0.45,outline:"1px solid "+x.color}})))})),
 h("div",{className:"mt-3 flex flex-wrap gap-4 text-[10.5px] text-fog-500"},h("span",null,"Solid: reported"),h("span",null,"Translucent: estimated range (when defensible)"),h("span",null,"Hatched: arithmetic bound if every outstanding vote went to that party at the high turnout")),
 R.ok&&top2.length===2&&h("p",{className:"mt-3 rounded-md border border-line px-3 py-2 text-xs text-fog-200"},overlap?"The ranges for "+top2[0].cand+" and "+top2[1].cand+" overlap. The data cannot separate them under this scenario.":"Under this scenario the ranges for "+top2[0].cand+" and "+top2[1].cand+" do not overlap. This is an analytical estimate under stated assumptions, not a result."),
-gxSrc(GX_SRC_RES+(o.verifiedOnly?" (verified only)":""),R.at));
-var sens=he.useMemo(function(){return[15,25,35,45,55].map(function(tv){var r=gxProjRun(t,pus,Object.assign({},o,{tLo:tv,tHi:tv,iter:120}));var a=r.res[0],b=r.res[1];return{turn:tv+"%",lo:Math.round(a.lo-b.hi),hi:Math.round(a.hi-b.lo),ok:r.ok}})},[_d.v,JSON.stringify(o)]);
+gxSrc(gxSrcLabel()+(o.verifiedOnly&&!gxUpOn()?" (verified only)":""),R.at));
+var sens=he.useMemo(function(){return[15,25,35,45,55].map(function(tv){var r=gxProjRun(t,pus,Object.assign({},o,{tLo:tv,tHi:tv,iter:120}));var a=r.res[0],b=r.res[1];return{turn:tv+"%",lo:Math.round(a.lo-b.hi),hi:Math.round(a.hi-b.lo),ok:r.ok}})},[_d.v,JSON.stringify(o),up.ver]);
 var sensCard=h(T,{title:"Sensitivity to turnout",subtitle:gxParties()[0].cand+" minus "+gxParties()[1].cand+", 90% range, at fixed turnout in outstanding PUs",bodyClass:"p-0"},
 h(GxTable,{rows:sens,rowKey:function(r){return r.turn},cols:[["Turnout",function(r){return r.turn},"left"],["Low",function(r){return R.ok?gxF(r.lo):"Withheld"},"right"],["High",function(r){return R.ok?gxF(r.hi):"Withheld"},"right"],["Range crosses zero",function(r){return R.ok?(r.lo<=0&&r.hi>=0?"Yes":"No"):"—"},"right"]]}));
 var miss=Object.keys(R.by).map(function(k){var b=R.by[k];return{code:k,name:t.lgaByCode.get(k).name,rep:b.rep.length,out:b.out.length,pct:ne(b.out.length,b.rep.length+b.out.length)}});
@@ -3677,7 +3810,7 @@ h("li",null,"Turnout in outstanding PUs is drawn uniformly between the low and h
 h("li",null,"Intervals cover sampling and turnout uncertainty only. They do not cover late-reporting bias, disputed sheets or errors in source documents."),
 h("li",null,"No winner is ever declared. Only INEC declares results.")));
 return h("div",{className:"flex flex-col gap-4"},gxHead("Projection and scenario analysis","Build your own what-if scenario with the controls on the right, then check what the reported data can statistically support below. All outputs are analytical estimates.",save),
-h(GxWhatIfSection,null),h("div",{className:"mt-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-signal-300/80"},"Statistical projection"),verdict,kp,h("div",{className:"grid gap-4 xl:grid-cols-[1fr_380px]"},h("div",{className:"flex flex-col gap-4"},rows,sensCard),inputs),h("div",{className:"grid gap-4 xl:grid-cols-2"},missCard,method),runCard)}
+h(GxEntry,null),h(GxWhatIfSection,null),h(GxLgaProj,null),h("div",{className:"mt-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-signal-300/80"},"Statistical projection"),verdict,kp,h("div",{className:"grid gap-4 xl:grid-cols-[1fr_380px]"},h("div",{className:"flex flex-col gap-4"},rows,sensCard),inputs),h("div",{className:"grid gap-4 xl:grid-cols-2"},missCard,method),runCard)}
 
 /* 8. Historical election comparison */
 function GxHist(){var h=he.createElement,_d=D(),t=_d.s,nav=Ce(),_a=he.useState("2023"),a=_a[0],setA=_a[1],_b=he.useState("2027"),b=_b[0],setB=_b[1],_m=he.useState("share"),mm=_m[0],setMm=_m[1];
